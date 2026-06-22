@@ -5,9 +5,17 @@ Guide for AI coding assistants working with the Genesis physics simulation codeb
 ## Quick Start
 
 ```bash
-# Setup
+# Setup (CUDA)
 uv sync
-uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # or cpu/metal
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# Setup (AMD ROCm)
+uv sync
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+
+# Setup (CPU only)
+uv sync
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # Run tests
 uv run pytest tests/
@@ -16,6 +24,13 @@ uv run pytest tests/ -m required  # minimal set
 # Run examples
 uv run examples/tutorials/hello_genesis.py
 ```
+
+## AMD ROCm Notes
+
+- Use `gs.init(backend=gs.amdgpu)` for AMD GPUs
+- AMD GPU backend is marked as experimental in Genesis
+- ROCm 7.2+ required for gfx1151 (RDNA 3.5) architecture
+- Test warnings about `/proc/driver/nvidia/gpus/` are expected on AMD systems
 
 ## How to Run Tests
 
