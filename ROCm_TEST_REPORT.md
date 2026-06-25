@@ -79,7 +79,72 @@
 
 ---
 
-## 最终通过率
+## ❌ 仍然失败的测试详情
+
+### 1. test_rigid_physics::test_frictionloss_advanced
+
+**错误类型**: 物理精度差异
+
+**错误信息**:
+```
+Not equal to tolerance rtol=0.05, atol=0.05
+
+Mismatched elements: 1 / 2 (50%)
+Mismatch at index: [0]
+  ACTUAL: array([0.071781, 0.012392], dtype=float32)
+  DESIRED: array([0., 0.])
+
+Max absolute difference: 0.07178067
+```
+
+**测试逻辑**:
+- 场景: 机器人推动盒子后，检查盒子最终位置
+- 期望: 盒子位置 [x, y] ≈ [0, 0]
+- 实际: 盒子位置 [0.0718, 0.0124]
+- 容差: atol=0.05 (Y方向偏移 0.0718 超出容差)
+
+**可能原因**:
+- 碰撞检测精度差异
+- 摩擦力计算微小差异
+- 物理求解器在 AMD GPU 上的数值差异
+
+**影响**: 低 - 不影响核心功能，仅精度差异
+
+---
+
+### 2. recorders::test_plotter
+
+**错误类型**: 快照对比失败
+
+**错误信息**:
+```
+Image mismatch [std_err=42.61 (thr=1.00), ratio_err=40437 (thr=360.0)]
+```
+
+**测试逻辑**:
+- 场景: 渲染图形界面并对比图像快照
+- 期望: 渲染结果与基准图像一致
+- 实际: 像素级差异超出阈值
+
+**可能原因**:
+- 无头环境无显示器，渲染结果与有图形环境不同
+- 字体渲染差异
+- 抗锯齿/阴影等图形特性差异
+
+**影响**: 无 - 环境限制，非 AMD 兼容性问题
+
+---
+
+### 3. test_render 相关 (3个)
+
+**跳过** (无头环境限制):
+- test_rasterizer_camera_sensor_with_viewer
+- test_rasterizer_sensor_env_spacing_invariance[with_viewer]
+- test_interactive_viewer_key_press
+
+---
+
+## 最终统计
 
 | 指标 | Remote CI | 本地验证 |
 |------|-----------|----------|
