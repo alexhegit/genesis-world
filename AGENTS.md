@@ -7,7 +7,9 @@ Guide for AI coding assistants working with the Genesis physics simulation codeb
 ```bash
 # Setup
 uv sync
-uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # or cpu/metal
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # CUDA
+uv pip install torch --index-url https://download.pytorch.org/whl/rocm7.2  # AMD ROCm
+# or: uv pip install torch  # CPU/Metal
 
 # Run tests
 uv run pytest tests/
