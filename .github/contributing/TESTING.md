@@ -9,7 +9,9 @@ Use `uv` for running tests:
 uv sync
 
 # Install PyTorch for your platform (see README.md)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # NVIDIA
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # NVIDIA CUDA
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2  # AMD ROCm
+# or: uv pip install torch  # CPU/Metal
 ```
 
 ## Running Tests
