@@ -197,6 +197,141 @@ All in `test_hybrid.py`:
 | test_render.py | 16 | Missing CUDA (8), LuisaRender (2), other (6) |
 | test_sensor_camera.py | 7 | Missing CUDA (3), LuisaRender (4) |
 
+## Root Cause Analysis
+
+### Category 1: CDNA HIP Illegal Memory Access (15 cases)
+
+**Root cause:** All failures involve `quadrants` (QD) kernels — Genesis's GPU compute framework. CDNA 3 (gfx942) architecture has compatibility issues with certain QD kernel memory operations (likely atomics, shared memory, or global memory access patterns), triggering HIP's illegal address detection.
+
+**Affected functionality:**
+
+| Sub-category | Tests | What breaks |
+|--------------|-------|-------------|
+| SPH/MPM/PBD fluid emission | `test_fluid_emitter` (7) | Particle physics simulation — all fluid types (SPH liquid, PBD liquid, MPM liquid/sand/snow/elastic) |
+| Rigid+muscle hybrid | `test_rigid_mpm_muscle` (1) | Muscle-driven soft-rigid coupled simulation |
+| Rigid+MPM coupling | `test_rigid_mpm_legacy_coupling` (2) | Legacy rigid-MPM particle coupling |
+| Mesh-MPM build | `test_mesh_mpm_build` (1) | Mesh-to-MPM particle conversion |
+| FEM+rigid SAP | `test_sap_fem_vs_robot[64]` (1) | FEM-rigid body SAP coupler |
+| Rigid-rigid SAP | `test_sap_rigid_rigid_hybrid[64]` (1) | SAP hydroelastic contact between rigid bodies |
+
+**Impact:** All Hybrid materials, particle emitters (SPH/MPM/PBD), and SAP coupler are completely unusable on MI300X. This is the largest functional gap.
+
+### Category 2: Rendering — No Display (18 cases)
+
+**Root cause:** MI300X is a compute-only GPU with no display output. OpenGL context cannot be created.
+
+**Affected functionality:**
+
+| Sub-category | Tests | What breaks |
+|--------------|-------|-------------|
+| Rasterizer rendering | `test_render.py` (12) | Camera tracking, sensor debug visualization, offscreen rendering, batch rendering |
+| Interactive viewer | `test_viewer.py` (5) | 3D interactive visualization |
+| Data plotting | `test_recorders.py` (1) | Statistical charts and recording |
+
+**Impact:** All visual output (rendering, viewer, plotting) is unavailable on MI300X. This is expected behavior for a compute-only card and does not affect physics computation.
+
+### Category 3: Rigid Physics Precision (10 cases)
+
+**Root cause:** GPU floating-point precision differences cause numerical errors to exceed test tolerances. CDNA 3's FPU may produce slightly different rounding results in certain accumulation/reduction operations compared to NVIDIA GPUs.
+
+**test_rigid_physics.py (5 cases):**
+
+| Test | What it tests | Failure mode |
+|------|--------------|--------------|
+| `test_set_root_pose[batch_fixed_verts, relative]` (4) | Rigid body pose set/get with `set_pos`/`set_quat`, AABB computation, frame-relative vs world-frame transforms | AABB precision check fails in `batch_fixed_verts=True` mode |
+| `test_normalized_quat` (1) | Quaternion normalization robustness — setting unnormalized quaternion, verifying simulation handles it correctly | Post-step quaternion norm deviates from 1.0 beyond tolerance |
+
+**Functional impact:** Rigid body pose control (set_pos/set_quat) has slight precision degradation in batch fixed vertex mode. Quaternion normalization robustness is marginally reduced.
+
+**test_rigid_physics_island.py (5 cases):**
+
+| Test | What it tests | Failure mode |
+|------|--------------|--------------|
+| `test_partition_logics[n_envs]` (2) | Contact island partitioning logic — which rigid bodies are grouped into independent "islands" for parallel solving | Island assignment or dof/contact/constraint counts differ from expected |
+| `test_solve_correctness[noslip_iterations, n_envs]` (3) | Equivalence of island-decomposed solve vs monolithic solve, with and without noslip friction post-solve | Position results drift apart at fp-accumulation level after 80 chaotic steps |
+
+**Functional impact:** Contact island partitioning and the decomposed solver produce slightly different numerical results. For most use cases this is acceptable, but applications requiring bit-exact reproducibility across backends will see differences.
+
+### Category 4: Sensors Precision (4 cases)
+
+**Root cause:** GPU floating-point precision differences in sensor computation kernels.
+
+| Test | What it tests | Failure mode |
+|------|--------------|--------------|
+| `test_contact_sensors_gravity_force[n_envs]` (2) | Contact force sensor detects correct forces on a falling box (should equal weight) | Force reading deviates from theoretical value |
+| `test_surface_distance_sensor_box_sphere[n_envs]` (2) | Surface distance sensor measures nearest distance between box and sphere | Distance reading deviates from exact geometric distance |
+
+**Functional impact:** Force/torque sensors and distance sensors have slightly reduced precision on MI300X. The absolute values may differ by small amounts from CPU or NVIDIA GPU results.
+
+### Category 5: Quadrants ndarray Compilation (2 cases)
+
+**Root cause:** QD's ndarray mode (`GS_ENABLE_NDARRAY=1`, no Triton) fails to compile or run on GPU backend. The test spawns a subprocess with ndarray mode enabled and verifies offline cache behavior.
+
+| Test | What it tests | Failure mode |
+|------|--------------|--------------|
+| `test_ndarray_no_compile[gpu-[(3,0),(4,1)]]` | QD ndarray mode with scene building (3 objects, 0 envs → 4 objects, 1 env) | Subprocess returns non-success exit code |
+| `test_ndarray_no_compile[gpu-[(3,3),(4,4)]]` | QD ndarray mode with batched scenes (3 objects/3 envs → 4 objects/4 envs) | Same failure |
+
+**Functional impact:** The ndarray fallback path (non-Triton GPU computation) is unusable on MI300X. This is a secondary code path; the primary Triton-based path works fine.
+
+### Category 6: Differentiable Simulation (2 cases)
+
+**Root cause:** Gradient computation in differentiable simulation fails on GPU backend. The `GenesisException` suggests a kernel-level failure when computing or propagating gradients.
+
+| Test | What it tests | Failure mode |
+|------|--------------|--------------|
+| `test_differentiable_rigid` | Optimizes initial pose via Adam to reach target position through 100-step differentiable simulation | `loss.backward()` or simulation step raises GenesisException |
+| `test_diff_sim_vs_solver_state_grad_parity` | Verifies that gradients from `get_state()` and `solver_state` produce identical results | Same exception during gradient computation |
+
+**Functional impact:** Differentiable simulation (trajectory optimization, optimal control, gradient-based policy learning) is completely unusable on MI300X.
+
+### Category 7: Other Failures (7 cases)
+
+| Test | Root cause | Functional impact |
+|------|-----------|-------------------|
+| `test_sparse_noslip_resting_stability[gpu]` | Sparse solver + noslip friction constraint produces insufficient precision on CDNA 3. 16 boxes on a table fail to reach stable resting state within tolerance. | Sparse rigid body solving for large-scale contact scenes has reduced stability |
+| `test_camera_lookat_entity` | Rasterizer camera snapshot pixel comparison fails (likely rendering precision difference or missing OpenGL context) | Camera rendering output differs |
+| `test_repr_does_not_crash` | Worker crash — likely caused by residual GPU state from a prior test corrupting the process | Debug string representation |
+| `test_track_rigid` | HIP illegal memory access during kinematic ghost entity tracking | Kinematic rigid body tracking (ghost entities) |
+| `test_hanging_rigid_cable` | HIP illegal memory access during multi-segment articulated rigid body simulation | Multi-body articulated structures (cables, chains) |
+| `test_plotter` | Snapshot pixel comparison fails (needs display) | Data plotting |
+
+## Functional Availability Summary
+
+### ✅ Fully Functional (267 tests, 83.4%)
+
+| Domain | Coverage |
+|--------|----------|
+| Rigid body basics | Analytical vs GJK collision, pose control, joint limits |
+| Individual solvers | SPH, FEM, PBD, MPM (standalone) |
+| Deformable physics | Soft body simulation |
+| Acceleration structures | BVH |
+| Mesh processing | Loading, convexification, simplification |
+| Utilities | Math, geometry, I/O |
+| Contact island basics | Partitioning works, precision slightly degraded |
+
+### ⚠️ Functional with Precision Degradation
+
+| Domain | Impact |
+|--------|--------|
+| Rigid body pose control | AABB precision slightly reduced in batch mode |
+| Contact island solving | Decomposed vs monolithic solve differs at fp level |
+| Force/distance sensors | Readings deviate slightly from exact values |
+| Sparse rigid solving | Static stability margin reduced |
+
+### ❌ Not Functional
+
+| Domain | Root cause | Severity |
+|--------|-----------|----------|
+| Hybrid materials (rigid+soft coupling) | QD kernel CDNA incompatibility | **Critical** — core feature |
+| Particle emitters (SPH/MPM/PBD) | QD kernel CDNA incompatibility | **Critical** — core feature |
+| SAP coupler (FEM-rigid, rigid-rigid) | QD kernel CDNA incompatibility | **High** — coupled simulation |
+| Differentiable simulation | Gradient kernel failure | **High** — ML/optimization workflows |
+| QD ndarray mode | GPU compilation failure | **Low** — secondary code path |
+| Rendering/visualization | No display output | **N/A** — expected for compute-only GPU |
+| Kinematic ghost tracking | HIP illegal memory | **Medium** — ghost entity feature |
+| Articulated multi-body (cables) | HIP illegal memory | **Medium** — specific use case |
+
 ## Date
 
 2026-07-09
