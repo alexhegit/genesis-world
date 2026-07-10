@@ -332,6 +332,77 @@ All in `test_hybrid.py`:
 | Kinematic ghost tracking | HIP illegal memory | **Medium** — ghost entity feature |
 | Articulated multi-body (cables) | HIP illegal memory | **Medium** — specific use case |
 
+## Fix Plan (by dependency order)
+
+### Prerequisite: Confirm QD CDNA 3 Support
+
+QD 1.0.2 ships `runtime_rocm70/oclc_isa_version_942.bc` for gfx942, but kernel execution triggers illegal memory access. This indicates compiled kernel code has CDNA 3 compatibility issues.
+
+**Action items:**
+- File upstream issue with QD, include minimal reproduction
+- Check if QD has a newer version with CDNA 3 fixes
+
+### Phase 1: QD Kernel CDNA Compatibility (Foundation)
+
+**Difficulty: High** — requires QD upstream fix or Genesis-level workaround
+
+| # | Fix | Cases fixed | Difficulty | Notes |
+|---|-----|-------------|------------|-------|
+| 1.1 | Report CDNA 3 illegal memory to QD upstream | — | Low | File issue with minimal repro |
+| 1.2 | Check for QD version with CDNA 3 fix | — | Low | `pip install quadrants --upgrade` |
+| 1.3 | Genesis-level CDNA kernel workaround | 15 | High | If QD cannot fix short-term, bypass problematic QD kernel call patterns |
+
+**Unlocks:** Hybrid materials, particle emitters, SAP coupler, kinematic ghost tracking, articulated multi-body
+
+### Phase 2: Precision Fixes (parallel with Phase 1)
+
+**Difficulty: Medium** — Genesis code-level changes
+
+| # | Fix | Cases fixed | Difficulty | Notes |
+|---|-----|-------------|------------|-------|
+| 2.1 | Rigid body pose AABB precision | 5 | Medium | Adjust floating-point accumulation in AABB computation or relax `test_set_root_pose` tolerance |
+| 2.2 | Quaternion normalization precision | 1 | Medium | Check `kernel_forward_kinematics_links_geoms` normalization implementation |
+| 2.3 | Contact island partitioning precision | 5 | Medium | Check numerical stability in island partitioning — likely atomic operation rounding differences |
+| 2.4 | Sensor precision tolerance | 4 | Low | Relax tolerance in `test_contact_sensors_gravity_force` and `test_surface_distance_sensor_box_sphere` |
+| 2.5 | Sparse solver resting stability | 1 | Medium | Check noslip friction numerical behavior on CDNA in `test_sparse_noslip_resting_stability` |
+
+### Phase 3: Differentiable Simulation (depends on Phase 1)
+
+**Difficulty: High** — likely also affected by QD kernel issues
+
+| # | Fix | Cases fixed | Difficulty | Notes |
+|---|-----|-------------|------------|-------|
+| 3.1 | Differentiable rigid body simulation | 2 | High | `test_differentiable_rigid` and `test_diff_sim_vs_solver_state_grad_parity` — gradient kernel failure on CDNA |
+
+**Note:** These `GenesisException` failures are very likely QD kernel issues; Phase 1 fix should resolve them.
+
+### Phase 4: QD ndarray Mode (independent)
+
+**Difficulty: Low** — isolated compilation issue
+
+| # | Fix | Cases fixed | Difficulty | Notes |
+|---|-----|-------------|------------|-------|
+| 4.1 | ndarray mode GPU compilation | 2 | Low | `test_ndarray_no_compile[gpu-...]` — subprocess ndarray compilation failure |
+
+### No Fix Needed (expected behavior)
+
+| Cases | Reason | Notes |
+|-------|--------|-------|
+| 18 | No display | MI300X is compute-only GPU; rendering/viewer unavailability is expected |
+| 1 | Worker crash | `test_repr_does_not_crash` likely caused by residual GPU state from prior test, not an independent bug |
+
+### Execution Order
+
+```
+Phase 1 (QD upstream)  ──→  Phase 3 (differentiable)
+       │
+       └──→ Phase 2 (precision) [can parallel]
+                    │
+                    └──→ Phase 4 (ndarray) [can parallel]
+```
+
+**Minimum viable fix path:** Phase 2 + Phase 4 (~13 cases) — completable at Genesis code level without QD upstream dependency.
+
 ## Date
 
 2026-07-09
